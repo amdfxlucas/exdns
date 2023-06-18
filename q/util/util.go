@@ -4,8 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"strings"
 
+	"github.com/miekg/dns"
 	"github.com/netsec-ethz/scion-apps/pkg/pan"
 )
 
@@ -116,6 +118,23 @@ func ReverseSCIONAddr(scaddr string) (string, error) {
 		return invName, nil
 	}
 	return scaddr, errors.New("your AS's host addressing scheme is neither IPv4 nor 6 and not supported for rDNS lookup yet")
+}
+
+func LoadRHINECert(rhinecertificate *string) ([]byte, error) {
+
+	var cert []byte
+	if *rhinecertificate != "" {
+		if bytes, err := os.ReadFile(*rhinecertificate); err != nil {
+
+			fmt.Fprintf(os.Stderr, "Failure to open %s: %s\n", *rhinecertificate, err.Error())
+			return nil, err
+		} else {
+			cert = bytes
+			return cert, nil
+		}
+	}
+	return nil, errors.New("path to rhineCertificate was invalid")
+
 }
 
 func ParseIPv6(s string) (ip net.IP) {
@@ -248,4 +267,20 @@ func InvertIPv6(ip string) (invertedIP string, err error) {
 		}
 	}
 	return invertedIP, nil
+}
+
+// shortSig shortens RRSIG to "miek.nl RRSIG(NS)"
+func ShortSig(sig *dns.RRSIG) string {
+	return sig.Header().Name + " RRSIG(" + dns.TypeToString[sig.TypeCovered] + ")"
+}
+
+// Return the RRset belonging to the signature with name and type t
+func GetRRset(l []dns.RR, name string, t uint16) []dns.RR {
+	var l1 []dns.RR
+	for _, rr := range l {
+		if strings.ToLower(rr.Header().Name) == strings.ToLower(name) && rr.Header().Rrtype == t {
+			l1 = append(l1, rr)
+		}
+	}
+	return l1
 }

@@ -24,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	"amdfxlucas/sdig/rhinevalidation"
 	"amdfxlucas/sdig/util"
 
 	"github.com/miekg/dns"
@@ -34,34 +35,36 @@ import (
 // TODO(miek): serial in ixfr
 
 var (
-	dnskey       *dns.DNSKEY
-	short        = flag.Bool("short", false, "abbreviate long DNSSEC records")
-	dnssec       = flag.Bool("dnssec", false, "request DNSSEC records")
-	query        = flag.Bool("question", false, "show question")
-	check        = flag.Bool("check", false, "check internal DNSSEC consistency")
-	six          = flag.Bool("6", false, "use IPv6 only")
-	four         = flag.Bool("4", false, "use IPv4 only")
-	anchor       = flag.String("anchor", "", "use the DNSKEY in this file as trust anchor")
-	tsig         = flag.String("tsig", "", "request tsig with key: [hmac:]name:key")
-	port         = flag.Int("port", 53, "port number to use")
-	laddr        = flag.String("laddr", "", "local address to use")
-	aa           = flag.Bool("aa", false, "set AA flag in query")
-	ad           = flag.Bool("ad", false, "set AD flag in query")
-	cd           = flag.Bool("cd", false, "set CD flag in query")
-	rd           = flag.Bool("rd", true, "set RD flag in query")
-	fallback     = flag.Bool("fallback", false, "fallback to 4096 bytes bufsize and after that TCP")
-	tcp          = flag.Bool("tcp", false, "TCP mode, multiple queries are asked over the same connection")
-	squic        = flag.Bool("squic", false, "SCION QUIC DoQ mode")
-	tlscert      = flag.String("tlscert", "", "TLS Certificate for ClientAuth ")
-	tlskey       = flag.String("tlskey", "", "TLS Private Key ")
-	timeoutDial  = flag.Duration("timeout-dial", 2*time.Second, "Dial timeout")
-	timeoutRead  = flag.Duration("timeout-read", 2*time.Second, "Read timeout")
-	timeoutWrite = flag.Duration("timeout-write", 2*time.Second, "Write timeout")
-	nsid         = flag.Bool("nsid", false, "set edns nsid option")
-	client       = flag.String("client", "", "set edns client-subnet option")
-	opcode       = flag.String("opcode", "query", "set opcode to query|update|notify")
-	rcode        = flag.String("rcode", "success", "set rcode to noerror|formerr|nxdomain|servfail|...")
-	invert       = flag.Bool("x", false, "reverse DNS Lookup of ipv4/6 or SCION addresses")
+	dnskey           *dns.DNSKEY
+	short            = flag.Bool("short", false, "abbreviate long DNSSEC records")
+	dnssec           = flag.Bool("dnssec", false, "request DNSSEC records")
+	query            = flag.Bool("question", false, "show question")
+	check            = flag.Bool("check", false, "check internal DNSSEC consistency")
+	six              = flag.Bool("6", false, "use IPv6 only")
+	four             = flag.Bool("4", false, "use IPv4 only")
+	anchor           = flag.String("anchor", "", "use the DNSKEY in this file as trust anchor")
+	tsig             = flag.String("tsig", "", "request tsig with key: [hmac:]name:key")
+	port             = flag.Int("port", 53, "port number to use")
+	laddr            = flag.String("laddr", "", "local address to use")
+	aa               = flag.Bool("aa", false, "set AA flag in query")
+	ad               = flag.Bool("ad", false, "set AD flag in query")
+	cd               = flag.Bool("cd", false, "set CD flag in query")
+	rd               = flag.Bool("rd", true, "set RD flag in query")
+	fallback         = flag.Bool("fallback", false, "fallback to 4096 bytes bufsize and after that TCP")
+	tcp              = flag.Bool("tcp", false, "TCP mode, multiple queries are asked over the same connection")
+	rhine            = flag.Bool("rhine", false, "check rhine consistency")
+	rhinecertificate = flag.String("rhinecert", "", "use the ca certificate in this file to validate rcerts")
+	squic            = flag.Bool("squic", false, "SCION QUIC DoQ mode")
+	tlscert          = flag.String("tlscert", "", "TLS Certificate for ClientAuth ")
+	tlskey           = flag.String("tlskey", "", "TLS Private Key ")
+	timeoutDial      = flag.Duration("timeout-dial", 2*time.Second, "Dial timeout")
+	timeoutRead      = flag.Duration("timeout-read", 2*time.Second, "Read timeout")
+	timeoutWrite     = flag.Duration("timeout-write", 2*time.Second, "Write timeout")
+	nsid             = flag.Bool("nsid", false, "set edns nsid option")
+	client           = flag.String("client", "", "set edns client-subnet option")
+	opcode           = flag.String("opcode", "query", "set opcode to query|update|notify")
+	rcode            = flag.String("rcode", "success", "set rcode to noerror|formerr|nxdomain|servfail|...")
+	invert           = flag.Bool("x", false, "reverse DNS Lookup of ipv4/6 or SCION addresses")
 )
 
 func main() {
@@ -92,6 +95,11 @@ func main() {
 		} else {
 			dnskey = k
 		}
+	}
+	rhinecert, err := util.LoadRHINECert(rhinecertificate)
+	if err != nil {
+		fmt.Printf("Error: %v", err.Error())
+		return
 	}
 
 	var nameserver string
@@ -498,6 +506,22 @@ Query:
 		if *short {
 			shortenMsg(r)
 		}
+		if *rhine {
+			if r.Rcode == dns.RcodeSuccess {
+				fmt.Printf("[RHINE] Checking rhine consistency\n")
+				roa, _, ok := rhinevalidation.ExtractROAFromMsg(r)
+				if !ok {
+					fmt.Printf("[RHINE] The response doesn't contain correct ROA!\n")
+				} else {
+					if !rhinevalidation.VerifyRhineROA(roa, rhinecert) {
+						fmt.Printf("[RHINE] The ROA verify failed!\n")
+					}
+					//dnskey = roa.dnskey // dnskey field is private
+				}
+				//rhinevalidation.RhineRRSigCheck(r, dnskey)
+				rhinevalidation.RhineRRSigCheckROA(r, roa)
+			}
+		}
 
 		fmt.Printf("%v", r)
 		fmt.Printf("\n;; query time: %.3d µs, server: %s(%s), size: %d bytes\n", rtt/1e3, nameserver, c.Net, r.Len())
@@ -530,7 +554,7 @@ func sectionCheck(set []dns.RR, server string, tcp bool) {
 			if !rr.(*dns.RRSIG).ValidityPeriod(time.Now().UTC()) {
 				expired = "(*EXPIRED*)"
 			}
-			rrset := getRRset(set, rr.Header().Name, rr.(*dns.RRSIG).TypeCovered)
+			rrset := util.GetRRset(set, rr.Header().Name, rr.(*dns.RRSIG).TypeCovered)
 			if dnskey == nil {
 				key = getKey(rr.(*dns.RRSIG).SignerName, rr.(*dns.RRSIG).KeyTag, server, tcp)
 			} else {
@@ -546,9 +570,9 @@ func sectionCheck(set []dns.RR, server string, tcp bool) {
 			}
 			if err := rr.(*dns.RRSIG).Verify(key, rrset); err != nil {
 				fmt.Printf(";- Bogus signature, %s does not validate (DNSKEY %s/%d/%s) [%s] %s\n",
-					shortSig(rr.(*dns.RRSIG)), key.Header().Name, key.KeyTag(), where, err.Error(), expired)
+					util.ShortSig(rr.(*dns.RRSIG)), key.Header().Name, key.KeyTag(), where, err.Error(), expired)
 			} else {
-				fmt.Printf(";+ Secure signature, %s validates (DNSKEY %s/%d/%s) %s\n", shortSig(rr.(*dns.RRSIG)), key.Header().Name, key.KeyTag(), where, expired)
+				fmt.Printf(";+ Secure signature, %s validates (DNSKEY %s/%d/%s) %s\n", util.ShortSig(rr.(*dns.RRSIG)), key.Header().Name, key.KeyTag(), where, expired)
 			}
 		}
 	}
@@ -661,17 +685,6 @@ func denial3(nsec3 []dns.RR, in *dns.Msg) {
 	}
 }
 
-// Return the RRset belonging to the signature with name and type t
-func getRRset(l []dns.RR, name string, t uint16) []dns.RR {
-	var l1 []dns.RR
-	for _, rr := range l {
-		if strings.ToLower(rr.Header().Name) == strings.ToLower(name) && rr.Header().Rrtype == t {
-			l1 = append(l1, rr)
-		}
-	}
-	return l1
-}
-
 // Get the key from the DNS (uses the local resolver) and return them.
 // If nothing is found we return nil
 func getKey(name string, keytag uint16, server string, tcp bool) *dns.DNSKEY {
@@ -694,11 +707,6 @@ func getKey(name string, keytag uint16, server string, tcp bool) *dns.DNSKEY {
 		}
 	}
 	return nil
-}
-
-// shortSig shortens RRSIG to "miek.nl RRSIG(NS)"
-func shortSig(sig *dns.RRSIG) string {
-	return sig.Header().Name + " RRSIG(" + dns.TypeToString[sig.TypeCovered] + ")"
 }
 
 // shortenMsg walks trough message and shortens Key data and Sig data.
