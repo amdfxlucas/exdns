@@ -1,0 +1,22 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Launch Package",
+            "type": "go",
+            "request": "launch",
+            "mode": "debug",
+            "program": "${workspaceFolder}/q/q.go",
+            // "Usage: %s [options] [@server] [qtype...] [qclass...] [name ...]
+            // "args": ["-port=8853","-squic","@19-ffaa:1:1067,127.0.0.1","ANY", "IN","scion.test"]
+            // "args": ["-port=8853","-squic","@19-ffaa:1:1067,127.0.0.1","PTR", "IN","1.0.0.127.19-ffaa-1-1067.in-addr.arpa"] // 'manual' rDNS without -x flag (fst version)
+            //"args": ["-port=8853","-squic","@19-ffaa:1:1067,127.0.0.1","PTR", "IN","1.0.0.127.in-addr.19-ffaa-1-1067.scion.arpa"] // 'manual' rDNS without -x flag ( snd version)
+
+            "args": ["-port=8853","-squic","-x","@19-ffaa:1:1067,127.0.0.1","PTR", "IN","19-ffaa:1:1067,127.0.0.1"] // automatic reverse lookup with -x flag
+
+        }
+    ]
+}

@@ -15,6 +15,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"net"
@@ -23,7 +24,11 @@ import (
 	"strings"
 	"time"
 
+	"amdfxlucas/sdig/util"
+
 	"github.com/miekg/dns"
+	"github.com/netsec-ethz/scion-apps/pkg/pan"
+	"inet.af/netaddr"
 )
 
 // TODO(miek): serial in ixfr
@@ -46,6 +51,9 @@ var (
 	rd           = flag.Bool("rd", true, "set RD flag in query")
 	fallback     = flag.Bool("fallback", false, "fallback to 4096 bytes bufsize and after that TCP")
 	tcp          = flag.Bool("tcp", false, "TCP mode, multiple queries are asked over the same connection")
+	squic        = flag.Bool("squic", false, "SCION QUIC DoQ mode")
+	tlscert      = flag.String("tlscert", "", "TLS Certificate for ClientAuth ")
+	tlskey       = flag.String("tlskey", "", "TLS Private Key ")
 	timeoutDial  = flag.Duration("timeout-dial", 2*time.Second, "Dial timeout")
 	timeoutRead  = flag.Duration("timeout-read", 2*time.Second, "Read timeout")
 	timeoutWrite = flag.Duration("timeout-write", 2*time.Second, "Write timeout")
@@ -53,12 +61,13 @@ var (
 	client       = flag.String("client", "", "set edns client-subnet option")
 	opcode       = flag.String("opcode", "query", "set opcode to query|update|notify")
 	rcode        = flag.String("rcode", "success", "set rcode to noerror|formerr|nxdomain|servfail|...")
+	invert       = flag.Bool("x", false, "reverse DNS Lookup of ipv4/6 or SCION addresses")
 )
 
 func main() {
 	//serial := flag.Int("serial", 0, "perform an IXFR with this serial")
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: %s [options] [@server] [qtype...] [qclass...] [name ...]\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Usage: %s [options] [@server] [qtype... A,AAAA,NS,MX,TXT,SIG,PTR,ANY] [qclass... IN] [name ...]\n", os.Args[0])
 		flag.PrintDefaults()
 	}
 
@@ -151,14 +160,97 @@ func main() {
 	if nameserver[0] == '[' && nameserver[len(nameserver)-1] == ']' {
 		nameserver = nameserver[1 : len(nameserver)-1]
 	}
-	if i := net.ParseIP(nameserver); i != nil {
+
+	if _, err := pan.ParseUDPAddr(nameserver); err == nil {
+
+		nameserver = nameserver + ":" + strconv.Itoa(*port)
+	} else if i := net.ParseIP(nameserver); i != nil {
 		nameserver = net.JoinHostPort(nameserver, strconv.Itoa(*port))
 	} else {
 		nameserver = dns.Fqdn(nameserver) + ":" + strconv.Itoa(*port)
 	}
+
+	// this is a Reverse DNS (rDNS) Query => QName has to be inverted
+	if *invert {
+		for i, name := range qname {
+			var invName string
+
+			if addr, err := pan.ParseUDPAddr(name); err == nil {
+				invIA := strings.Replace(addr.IA.String(), ":", "-", -1)
+				var revIP string
+				if addr.IP.Is4() {
+					str := addr.IP.String()
+					revIP, err = util.InvertIPv4(str)
+					if err != nil {
+						return
+					}
+					invName = revIP + "." + invIA + ".in-addr.arpa"
+					qname[i] = invName
+				} else if addr.IP.Is6() {
+					tmpIP, err := util.InvertIPv6(addr.IP.StringExpanded())
+					if err != nil {
+						return
+					}
+					revIP = strings.Replace(tmpIP, ":", ".", -1)
+					invName = revIP + "." + invIA + ".ipv6.arpa"
+					qname[i] = invName
+				}
+
+			} else if util.ParseIPv4(name) != nil {
+				invName, err = util.InvertIPv4(name)
+				if err != nil {
+					return
+				}
+
+				qname[i] = invName + ".in-addr.arpa"
+			} else if ipv6, ok := netaddr.FromStdIP(util.ParseIPv6(name)); ok {
+				tmpIP, err := util.InvertIPv6(ipv6.StringExpanded())
+				if err != nil {
+					return
+				}
+				invName = strings.Replace(tmpIP, ":", ".", -1)
+
+				qname[i] = invName + ".ipv6.arpa"
+			} else { // Error, specifying garbage addresses is not how it works
+				return
+			}
+
+		}
+	}
+
 	c := new(dns.Client)
 	t := new(dns.Transfer)
 	c.Net = "udp"
+	if *squic {
+		c.Net = "squic"
+
+		/*	var cert tls.Certificate
+			var err error
+			cert, err = tls.LoadX509KeyPair(*tlscert, *tlskey)
+			if err != nil {
+				log.Error("failed to load Cert Files")
+				//return
+			}
+		*/
+		c.TLSConfig = &tls.Config{
+			//Certificates: []tls.Certificate{cert},
+			NextProtos: []string{"doq", "dq", "doq-i00", "doq-i02"},
+			ClientAuth: tls.NoClientCert,
+			MinVersion: tls.VersionTLS12,
+			MaxVersion: tls.VersionTLS13,
+			CipherSuites: []uint16{
+				tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+				tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+				tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,
+				tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
+				tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+				tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+				tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+				tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+				tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+			},
+		}
+	}
 	if *four {
 		c.Net = "udp4"
 	}
@@ -382,7 +474,7 @@ Query:
 			fmt.Printf(";; %s\n", err.Error())
 			continue
 		}
-		if(r.Truncated) {
+		if r.Truncated {
 			if *fallback {
 				if !*dnssec {
 					fmt.Printf(";; Truncated, trying %d bytes bufsize\n", dns.DefaultMsgSize)
