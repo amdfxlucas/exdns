@@ -184,7 +184,7 @@ func main() {
 					if err != nil {
 						return
 					}
-					invName = revIP + "." + invIA + ".in-addr.arpa"
+					invName = revIP + ".in-addr." + invIA + ".scion.arpa"
 					qname[i] = invName
 				} else if addr.IP.Is6() {
 					tmpIP, err := util.InvertIPv6(addr.IP.StringExpanded())
@@ -192,7 +192,7 @@ func main() {
 						return
 					}
 					revIP = strings.Replace(tmpIP, ":", ".", -1)
-					invName = revIP + "." + invIA + ".ipv6.arpa"
+					invName = revIP + ".ipv6." + invIA + ".scion.arpa"
 					qname[i] = invName
 				}
 
