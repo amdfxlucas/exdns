@@ -264,14 +264,17 @@ func main() {
 			c.Dialer.LocalAddr = &net.UDPAddr{IP: ip}
 		}
 	}
-
+	var queryOpcode int = dns.OpcodeQuery
+	if *invert {
+		queryOpcode = dns.OpcodeIQuery
+	}
 	m := &dns.Msg{
 		MsgHdr: dns.MsgHdr{
 			Authoritative:     *aa,
 			AuthenticatedData: *ad,
 			CheckingDisabled:  *cd,
 			RecursionDesired:  *rd,
-			Opcode:            dns.OpcodeQuery,
+			Opcode:            queryOpcode,
 		},
 		Question: make([]dns.Question, 1),
 	}
