@@ -1,9 +1,12 @@
 package util
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"strings"
+
+	"github.com/netsec-ethz/scion-apps/pkg/pan"
 )
 
 // Bigger than we need, not too big to worry about overflow
@@ -81,6 +84,38 @@ func ParseIPv4(s string) net.IP {
 		return nil
 	}
 	return net.IPv4(p[0], p[1], p[2], p[3])
+}
+
+// computes the inverse address for rDNS lookup
+// i.e. 19-ffaa:1:1067,[127.0.0.1] => 1.0.0.127.in-addr.19-ffaa-1-1067.scion.arpa.
+func ReverseSCIONAddr(scaddr string) (string, error) {
+	addr, err := pan.ParseUDPAddr(scaddr)
+	if err != nil {
+		// if it wasnt a valid SCION address, we were passed
+		// just act as the identity Fcn
+		return scaddr, err
+	}
+	var invName string
+	invIA := strings.Replace(addr.IA.String(), ":", "-", -1)
+	var revIP string
+	if addr.IP.Is4() {
+		str := addr.IP.String()
+		revIP, err = InvertIPv4(str)
+		if err != nil {
+			return scaddr, err
+		}
+		invName = revIP + ".in-addr." + invIA + ".scion.arpa"
+		return invName, nil
+	} else if addr.IP.Is6() {
+		tmpIP, err := InvertIPv6(addr.IP.StringExpanded())
+		if err != nil {
+			return scaddr, err
+		}
+		revIP = strings.Replace(tmpIP, ":", ".", -1)
+		invName = revIP + ".ipv6." + invIA + ".scion.arpa"
+		return invName, nil
+	}
+	return scaddr, errors.New("your AS's host addressing scheme is neither IPv4 nor 6 and not supported for rDNS lookup yet")
 }
 
 func ParseIPv6(s string) (ip net.IP) {

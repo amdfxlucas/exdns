@@ -175,25 +175,10 @@ func main() {
 		for i, name := range qname {
 			var invName string
 
-			if addr, err := pan.ParseUDPAddr(name); err == nil {
-				invIA := strings.Replace(addr.IA.String(), ":", "-", -1)
-				var revIP string
-				if addr.IP.Is4() {
-					str := addr.IP.String()
-					revIP, err = util.InvertIPv4(str)
-					if err != nil {
-						return
-					}
-					invName = revIP + ".in-addr." + invIA + ".scion.arpa"
-					qname[i] = invName
-				} else if addr.IP.Is6() {
-					tmpIP, err := util.InvertIPv6(addr.IP.StringExpanded())
-					if err != nil {
-						return
-					}
-					revIP = strings.Replace(tmpIP, ":", ".", -1)
-					invName = revIP + ".ipv6." + invIA + ".scion.arpa"
-					qname[i] = invName
+			if _, err := pan.ParseUDPAddr(name); err == nil {
+				qname[i], err = util.ReverseSCIONAddr(name)
+				if err != nil {
+					return
 				}
 
 			} else if util.ParseIPv4(name) != nil {
