@@ -96,11 +96,6 @@ func main() {
 			dnskey = k
 		}
 	}
-	rhinecert, err := util.LoadRHINECert(rhinecertificate)
-	if err != nil {
-		fmt.Printf("Error: %v", err.Error())
-		return
-	}
 
 	var nameserver string
 	for _, arg := range flag.Args() {
@@ -284,7 +279,7 @@ func main() {
 			RecursionDesired:  *rd,
 			Opcode:            queryOpcode,
 		},
-		Question: make([]dns.Question, 1),
+		//Question: make([]dns.Question, len(qname)),
 	}
 	if op, ok := dns.StringToOpcode[strings.ToUpper(*opcode)]; ok {
 		m.Opcode = op
@@ -424,8 +419,8 @@ Query:
 		if i < len(qclass) {
 			qc = qclass[i]
 		}
-		m.Question[0] = dns.Question{Name: dns.Fqdn(v), Qtype: qt, Qclass: qc}
-		m.Id = dns.Id()
+		//m.Question[0] = dns.Question{Name: dns.Fqdn(v), Qtype: qt, Qclass: qc}
+
 		if *tsig != "" {
 			if algo, name, secret, ok := tsigKeyParse(*tsig); ok {
 				m.SetTsig(name, algo, 300, time.Now().Unix())
@@ -436,10 +431,7 @@ Query:
 				continue
 			}
 		}
-		if *query {
-			fmt.Printf("%s", m.String())
-			fmt.Printf("\n;; size: %d bytes\n\n", m.Len())
-		}
+		m.Id = dns.Id()
 		if qt == dns.TypeAXFR || qt == dns.TypeIXFR {
 			env, err := t.In(m, nameserver)
 			if err != nil {
@@ -461,72 +453,88 @@ Query:
 			fmt.Printf("\n;; xfr size: %d records (envelopes %d)\n", record, envelope)
 			continue
 		}
-		r, rtt, err := c.Exchange(m, nameserver)
-	Redo:
-		switch err {
-		case nil:
-			//do nothing
-		default:
-			fmt.Printf(";; %s\n", err.Error())
-			continue
-		}
-		if r.Truncated {
-			if *fallback {
-				if !*dnssec {
-					fmt.Printf(";; Truncated, trying %d bytes bufsize\n", dns.DefaultMsgSize)
-					o := new(dns.OPT)
-					o.Hdr.Name = "."
-					o.Hdr.Rrtype = dns.TypeOPT
-					o.SetUDPSize(dns.DefaultMsgSize)
-					m.Extra = append(m.Extra, o)
-					r, rtt, err = c.Exchange(m, nameserver)
-					*dnssec = true
-					goto Redo
-				} else {
-					// First EDNS, then TCP
-					fmt.Printf(";; Truncated, trying TCP\n")
-					c.Net = "tcp"
-					r, rtt, err = c.Exchange(m, nameserver)
-					*fallback = false
-					goto Redo
-				}
+		m.Question = append(m.Question, dns.Question{Name: dns.Fqdn(v), Qtype: qt, Qclass: qc})
+	}
+
+	if *query {
+		fmt.Printf("%s", m.String())
+		fmt.Printf("\n;; size: %d bytes\n\n", m.Len())
+	}
+	// only for debug
+	c.Timeout = 999999999999
+	r, rtt, err := c.Exchange(m, nameserver)
+Redo:
+	switch err {
+	case nil:
+		//do nothing
+	default:
+		fmt.Printf(";; %s\n", err.Error())
+		//continue
+	}
+	if r.Truncated {
+		if *fallback {
+			if !*dnssec {
+				fmt.Printf(";; Truncated, trying %d bytes bufsize\n", dns.DefaultMsgSize)
+				o := new(dns.OPT)
+				o.Hdr.Name = "."
+				o.Hdr.Rrtype = dns.TypeOPT
+				o.SetUDPSize(dns.DefaultMsgSize)
+				m.Extra = append(m.Extra, o)
+				r, rtt, err = c.Exchange(m, nameserver)
+				*dnssec = true
+				goto Redo
+			} else {
+				// First EDNS, then TCP
+				fmt.Printf(";; Truncated, trying TCP\n")
+				c.Net = "tcp"
+				r, rtt, err = c.Exchange(m, nameserver)
+				*fallback = false
+				goto Redo
 			}
-			fmt.Printf(";; Truncated\n")
 		}
-		if r.Id != m.Id {
-			fmt.Fprintf(os.Stderr, "Id mismatch\n")
+		fmt.Printf(";; Truncated\n")
+	}
+	if r.Id != m.Id {
+		fmt.Fprintf(os.Stderr, "Id mismatch\n")
+		return
+	}
+
+	if *check {
+		sigCheck(r, nameserver, *tcp)
+		denialCheck(r)
+		fmt.Println()
+	}
+	if *short {
+		shortenMsg(r)
+	}
+	if *rhine {
+		rhinecert, err := util.LoadRHINECert(rhinecertificate)
+		if err != nil {
+			fmt.Printf("Error: %v", err.Error())
 			return
 		}
 
-		if *check {
-			sigCheck(r, nameserver, *tcp)
-			denialCheck(r)
-			fmt.Println()
-		}
-		if *short {
-			shortenMsg(r)
-		}
-		if *rhine {
-			if r.Rcode == dns.RcodeSuccess {
-				fmt.Printf("[RHINE] Checking rhine consistency\n")
-				roa, _, ok := rhinevalidation.ExtractROAFromMsg(r)
-				if !ok {
-					fmt.Printf("[RHINE] The response doesn't contain correct ROA!\n")
-				} else {
-					if !rhinevalidation.VerifyRhineROA(roa, rhinecert) {
-						fmt.Printf("[RHINE] The ROA verify failed!\n")
-					}
-					//dnskey = roa.dnskey // dnskey field is private
+		if r.Rcode == dns.RcodeSuccess {
+			fmt.Printf("[RHINE] Checking rhine consistency\n")
+			roa, _, ok := rhinevalidation.ExtractROAFromMsg(r)
+			if !ok {
+				fmt.Printf("[RHINE] The response doesn't contain correct ROA!\n")
+			} else {
+				if !rhinevalidation.VerifyRhineROA(roa, rhinecert) {
+					fmt.Printf("[RHINE] The ROA verify failed!\n")
 				}
-				//rhinevalidation.RhineRRSigCheck(r, dnskey)
-				rhinevalidation.RhineRRSigCheckROA(r, roa)
+				//dnskey = roa.dnskey // dnskey field is private
 			}
+			//rhinevalidation.RhineRRSigCheck(r, dnskey)
+			rhinevalidation.RhineRRSigCheckROA(r, roa)
 		}
-
-		fmt.Printf("%v", r)
-		fmt.Printf("\n;; query time: %.3d µs, server: %s(%s), size: %d bytes\n", rtt/1e3, nameserver, c.Net, r.Len())
 	}
+
+	fmt.Printf("%v", r)
+	fmt.Printf("\n;; query time: %.3d µs, server: %s(%s), size: %d bytes\n", rtt/1e3, nameserver, c.Net, r.Len())
 }
+
+// }
 
 func tsigKeyParse(s string) (algo, name, secret string, ok bool) {
 	s1 := strings.SplitN(s, ":", 3)
