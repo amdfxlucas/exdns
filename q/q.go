@@ -96,11 +96,6 @@ func main() {
 			dnskey = k
 		}
 	}
-	rhinecert, err := util.LoadRHINECert(rhinecertificate)
-	if err != nil {
-		fmt.Printf("Error: %v", err.Error())
-		return
-	}
 
 	var nameserver string
 	for _, arg := range flag.Args() {
@@ -507,6 +502,12 @@ Query:
 			shortenMsg(r)
 		}
 		if *rhine {
+			rhinecert, err := util.LoadRHINECert(rhinecertificate)
+			if err != nil {
+				fmt.Printf("Error: %v", err.Error())
+				return
+			}
+
 			if r.Rcode == dns.RcodeSuccess {
 				fmt.Printf("[RHINE] Checking rhine consistency\n")
 				roa, _, ok := rhinevalidation.ExtractROAFromMsg(r)
